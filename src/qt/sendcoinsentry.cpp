@@ -61,7 +61,7 @@ void SendCoinsEntry::on_payTo_textChanged(const QString &address)
         return;
     // Fill in label from address book, if address has an associated label
     QString associatedLabel = model->getAddressTableModel()->labelForAddress(address);
-    if(!associatedLabel.isEmpty())
+//    if(!associatedLabel.isEmpty())
         ui->addAsLabel->setText(associatedLabel);
 }
 
