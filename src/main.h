@@ -88,6 +88,7 @@ FILE* OpenBlockFile(unsigned int nFile, unsigned int nBlockPos, const char* pszM
 FILE* AppendBlockFile(unsigned int& nFileRet);
 bool LoadBlockIndex(bool fAllowNew=true);
 void PrintBlockTree();
+CBlockIndex* FindBlockByHeight(int nHeight);
 bool ProcessMessages(CNode* pfrom);
 bool SendMessages(CNode* pto, bool fSendTrickle);
 bool LoadExternalBlockFile(FILE* fileIn);
@@ -552,7 +553,7 @@ public:
             if (nBlockSize == 1)
             {
                 // Transactions under 10K are free
-                // (about 4500bc if made of 50bc inputs)
+                // (about 4500 BTC if made of 50 BTC inputs)
                 if (nBytes < 10000)
                     nMinFee = 0;
             }
