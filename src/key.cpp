@@ -48,7 +48,7 @@ err:
 
 // Perform ECDSA key recovery (see SEC1 4.1.6) for curves over (mod p)-fields
 // recid selects which key is recovered
-// if check is nonzero, additional checks are performed
+// if check is non-zero, additional checks are performed
 int ECDSA_SIG_recover_key_GFp(EC_KEY *eckey, ECDSA_SIG *ecsig, const unsigned char *msg, int msglen, int recid, int check)
 {
     if (!eckey) return 0;
@@ -129,6 +129,8 @@ void CKey::SetCompressedPubKey()
 void CKey::Reset()
 {
     fCompressedPubKey = false;
+    if (pkey != NULL)
+        EC_KEY_free(pkey);
     pkey = EC_KEY_new_by_curve_name(NID_secp256k1);
     if (pkey == NULL)
         throw key_error("CKey::CKey() : EC_KEY_new_by_curve_name failed");
@@ -137,6 +139,7 @@ void CKey::Reset()
 
 CKey::CKey()
 {
+    pkey = NULL;
     Reset();
 }
 
