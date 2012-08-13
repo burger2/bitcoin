@@ -35,6 +35,7 @@ class CDBEnv
 private:
     bool fDetachDB;
     bool fDbEnvInit;
+    bool fMockDb;
     boost::filesystem::path pathEnv;
 
     void EnvShutdown();
@@ -47,6 +48,8 @@ public:
 
     CDBEnv();
     ~CDBEnv();
+    void MakeMock();
+    bool IsMock() { return fMockDb; };
     bool Open(boost::filesystem::path pathEnv_);
     void Close();
     void Flush(bool fShutdown);
@@ -307,7 +310,6 @@ public:
     bool AddTxIndex(const CTransaction& tx, const CDiskTxPos& pos, int nHeight);
     bool EraseTxIndex(const CTransaction& tx);
     bool ContainsTx(uint256 hash);
-    bool ReadOwnerTxes(uint160 hash160, int nHeight, std::vector<CTransaction>& vtx);
     bool ReadDiskTx(uint256 hash, CTransaction& tx, CTxIndex& txindex);
     bool ReadDiskTx(uint256 hash, CTransaction& tx);
     bool ReadDiskTx(COutPoint outpoint, CTransaction& tx, CTxIndex& txindex);

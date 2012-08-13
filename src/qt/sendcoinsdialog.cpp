@@ -7,6 +7,7 @@
 #include "sendcoinsentry.h"
 #include "guiutil.h"
 #include "askpassphrasedialog.h"
+#include "base58.h"
 
 #include <QMessageBox>
 #include <QLocale>
@@ -46,10 +47,11 @@ void SendCoinsDialog::setModel(WalletModel *model)
             entry->setModel(model);
         }
     }
-    if(model)
+    if(model && model->getOptionsModel())
     {
         setBalance(model->getBalance(), model->getUnconfirmedBalance(), model->getImmatureBalance());
         connect(model, SIGNAL(balanceChanged(qint64, qint64, qint64)), this, SLOT(setBalance(qint64, qint64, qint64)));
+        connect(model->getOptionsModel(), SIGNAL(displayUnitChanged(int)), this, SLOT(updateDisplayUnit()));
     }
 }
 
@@ -120,7 +122,7 @@ void SendCoinsDialog::on_sendButton_clicked()
     {
     case WalletModel::InvalidAddress:
         QMessageBox::warning(this, tr("Send Coins"),
-            tr("The recepient address is not valid, please recheck."),
+            tr("The recipient address is not valid, please recheck."),
             QMessageBox::Ok, QMessageBox::Ok);
         break;
     case WalletModel::InvalidAmount:
@@ -202,7 +204,7 @@ SendCoinsEntry *SendCoinsDialog::addEntry()
     ui->scrollAreaWidgetContents->resize(ui->scrollAreaWidgetContents->sizeHint());
     QCoreApplication::instance()->processEvents();
     QScrollBar* bar = ui->scrollArea->verticalScrollBar();
-    if (bar)
+    if(bar)
         bar->setSliderPosition(bar->maximum());
     return entry;
 }
@@ -245,7 +247,7 @@ QWidget *SendCoinsDialog::setupTabChain(QWidget *prev)
 
 void SendCoinsDialog::pasteEntry(const SendCoinsRecipient &rv)
 {
-    if (!fNewRecipientAllowed)
+    if(!fNewRecipientAllowed)
         return;
 
     SendCoinsEntry *entry = 0;
@@ -272,6 +274,9 @@ bool SendCoinsDialog::handleURI(const QString &uri)
     // URI has to be valid
     if (GUIUtil::parseBitcoinURI(uri, &rv))
     {
+        CBitcoinAddress address(rv.address.toStdString());
+        if (!address.IsValid())
+            return false;
         pasteEntry(rv);
         return true;
     }
@@ -288,4 +293,13 @@ void SendCoinsDialog::setBalance(qint64 balance, qint64 unconfirmedBalance, qint
 
     int unit = model->getOptionsModel()->getDisplayUnit();
     ui->labelBalance->setText(BitcoinUnits::formatWithUnit(unit, balance));
+}
+
+void SendCoinsDialog::updateDisplayUnit()
+{
+    if(model && model->getOptionsModel())
+    {
+        // Update labelBalance with the current balance and the current unit
+        ui->labelBalance->setText(BitcoinUnits::formatWithUnit(model->getOptionsModel()->getDisplayUnit(), model->getBalance()));
+    }
 }
