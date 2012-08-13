@@ -51,6 +51,8 @@ namespace boost {
 #endif
 #include <io.h> /* for _commit */
 #include "shlobj.h"
+#elif defined(__linux__)
+# include <sys/prctl.h>
 #endif
 
 using namespace std;
@@ -58,6 +60,7 @@ using namespace std;
 map<string, string> mapArgs;
 map<string, vector<string> > mapMultiArgs;
 bool fDebug = false;
+bool fDebugNet = false;
 bool fPrintToConsole = false;
 bool fPrintToDebugger = false;
 bool fRequestShutdown = false;
@@ -72,7 +75,7 @@ bool fLogTimestamps = false;
 CMedianFilter<int64> vTimeOffsets(200,0);
 bool fReopenDebugLog = false;
 
-// Init openssl library multithreading support
+// Init OpenSSL library multithreading support
 static CCriticalSection** ppmutexOpenSSL;
 void locking_callback(int mode, int i, const char* file, int line)
 {
@@ -89,7 +92,7 @@ class CInit
 public:
     CInit()
     {
-        // Init openssl library multithreading support
+        // Init OpenSSL library multithreading support
         ppmutexOpenSSL = (CCriticalSection**)OPENSSL_malloc(CRYPTO_num_locks() * sizeof(CCriticalSection*));
         for (int i = 0; i < CRYPTO_num_locks(); i++)
             ppmutexOpenSSL[i] = new CCriticalSection();
@@ -105,7 +108,7 @@ public:
     }
     ~CInit()
     {
-        // Shutdown openssl library multithreading support
+        // Shutdown OpenSSL library multithreading support
         CRYPTO_set_locking_callback(NULL);
         for (int i = 0; i < CRYPTO_num_locks(); i++)
             delete ppmutexOpenSSL[i];
@@ -345,7 +348,7 @@ string FormatMoney(int64 n, bool fPlus)
     int64 remainder = n_abs%COIN;
     string str = strprintf("%"PRI64d".%08"PRI64d, quotient, remainder);
 
-    // Right-trim excess 0's before the decimal point:
+    // Right-trim excess zeros before the decimal point:
     int nTrim = 0;
     for (int i = str.size()-1; (str[i] == '0' && isdigit(str[i-2])); --i)
         ++nTrim;
@@ -702,6 +705,193 @@ string DecodeBase64(const string& str)
     return string((const char*)&vchRet[0], vchRet.size());
 }
 
+string EncodeBase32(const unsigned char* pch, size_t len)
+{
+    static const char *pbase32 = "abcdefghijklmnopqrstuvwxyz234567";
+
+    string strRet="";
+    strRet.reserve((len+4)/5*8);
+
+    int mode=0, left=0;
+    const unsigned char *pchEnd = pch+len;
+
+    while (pch<pchEnd)
+    {
+        int enc = *(pch++);
+        switch (mode)
+        {
+            case 0: // we have no bits
+                strRet += pbase32[enc >> 3];
+                left = (enc & 7) << 2;
+                mode = 1;
+                break;
+
+            case 1: // we have three bits
+                strRet += pbase32[left | (enc >> 6)];
+                strRet += pbase32[(enc >> 1) & 31];
+                left = (enc & 1) << 4;
+                mode = 2;
+                break;
+
+            case 2: // we have one bit
+                strRet += pbase32[left | (enc >> 4)];
+                left = (enc & 15) << 1;
+                mode = 3;
+                break;
+
+            case 3: // we have four bits
+                strRet += pbase32[left | (enc >> 7)];
+                strRet += pbase32[(enc >> 2) & 31];
+                left = (enc & 3) << 3;
+                mode = 4;
+                break;
+
+            case 4: // we have two bits
+                strRet += pbase32[left | (enc >> 5)];
+                strRet += pbase32[enc & 31];
+                mode = 0;
+        }
+    }
+
+    static const int nPadding[5] = {0, 6, 4, 3, 1};
+    if (mode)
+    {
+        strRet += pbase32[left];
+        for (int n=0; n<nPadding[mode]; n++)
+             strRet += '=';
+    }
+
+    return strRet;
+}
+
+string EncodeBase32(const string& str)
+{
+    return EncodeBase32((const unsigned char*)str.c_str(), str.size());
+}
+
+vector<unsigned char> DecodeBase32(const char* p, bool* pfInvalid)
+{
+    static const int decode32_table[256] =
+    {
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 26, 27, 28, 29, 30, 31, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1,  0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14,
+        15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, -1, -1, -1, -1, -1, -1,  0,  1,  2,
+         3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+        23, 24, 25, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
+    };
+
+    if (pfInvalid)
+        *pfInvalid = false;
+
+    vector<unsigned char> vchRet;
+    vchRet.reserve((strlen(p))*5/8);
+
+    int mode = 0;
+    int left = 0;
+
+    while (1)
+    {
+         int dec = decode32_table[(unsigned char)*p];
+         if (dec == -1) break;
+         p++;
+         switch (mode)
+         {
+             case 0: // we have no bits and get 5
+                 left = dec;
+                 mode = 1;
+                 break;
+
+              case 1: // we have 5 bits and keep 2
+                  vchRet.push_back((left<<3) | (dec>>2));
+                  left = dec & 3;
+                  mode = 2;
+                  break;
+
+             case 2: // we have 2 bits and keep 7
+                 left = left << 5 | dec;
+                 mode = 3;
+                 break;
+
+             case 3: // we have 7 bits and keep 4
+                 vchRet.push_back((left<<1) | (dec>>4));
+                 left = dec & 15;
+                 mode = 4;
+                 break;
+
+             case 4: // we have 4 bits, and keep 1
+                 vchRet.push_back((left<<4) | (dec>>1));
+                 left = dec & 1;
+                 mode = 5;
+                 break;
+
+             case 5: // we have 1 bit, and keep 6
+                 left = left << 5 | dec;
+                 mode = 6;
+                 break;
+
+             case 6: // we have 6 bits, and keep 3
+                 vchRet.push_back((left<<2) | (dec>>3));
+                 left = dec & 7;
+                 mode = 7;
+                 break;
+
+             case 7: // we have 3 bits, and keep 0
+                 vchRet.push_back((left<<5) | dec);
+                 mode = 0;
+                 break;
+         }
+    }
+
+    if (pfInvalid)
+        switch (mode)
+        {
+            case 0: // 8n base32 characters processed: ok
+                break;
+
+            case 1: // 8n+1 base32 characters processed: impossible
+            case 3: //   +3
+            case 6: //   +6
+                *pfInvalid = true;
+                break;
+
+            case 2: // 8n+2 base32 characters processed: require '======'
+                if (left || p[0] != '=' || p[1] != '=' || p[2] != '=' || p[3] != '=' || p[4] != '=' || p[5] != '=' || decode32_table[(unsigned char)p[6]] != -1)
+                    *pfInvalid = true;
+                break;
+
+            case 4: // 8n+4 base32 characters processed: require '===='
+                if (left || p[0] != '=' || p[1] != '=' || p[2] != '=' || p[3] != '=' || decode32_table[(unsigned char)p[4]] != -1)
+                    *pfInvalid = true;
+                break;
+
+            case 5: // 8n+5 base32 characters processed: require '==='
+                if (left || p[0] != '=' || p[1] != '=' || p[2] != '=' || decode32_table[(unsigned char)p[3]] != -1)
+                    *pfInvalid = true;
+                break;
+
+            case 7: // 8n+7 base32 characters processed: require '='
+                if (left || p[0] != '=' || decode32_table[(unsigned char)p[1]] != -1)
+                    *pfInvalid = true;
+                break;
+        }
+
+    return vchRet;
+}
+
+string DecodeBase32(const string& str)
+{
+    vector<unsigned char> vchRet = DecodeBase32(str.c_str());
+    return string((const char*)&vchRet[0], vchRet.size());
+}
+
 
 bool WildcardMatch(const char* psz, const char* mask)
 {
@@ -954,7 +1144,7 @@ void ShrinkDebugFile()
 // "Never go to sea with two chronometers; take one or three."
 // Our three time sources are:
 //  - System clock
-//  - Median of other nodes's clocks
+//  - Median of other nodes clocks
 //  - The user (asking the user to fix the system clock if the first two disagree)
 //
 static int64 nMockTime = 0;  // For unit testing
@@ -1015,7 +1205,7 @@ void AddTimeData(const CNetAddr& ip, int64 nTime)
                 if (!fMatch)
                 {
                     fDone = true;
-                    string strMessage = _("Warning: Please check that your computer's date and time are correct.  If your clock is wrong Bitcoin will not work properly.");
+                    string strMessage = _("Warning: Please check that your computer's date and time are correct! If your clock is wrong Bitcoin will not work properly.");
                     strMiscWarning = strMessage;
                     printf("*** %s\n", strMessage.c_str());
                     uiInterface.ThreadSafeMessageBox(strMessage+" ", string("Bitcoin"), CClientUIInterface::OK | CClientUIInterface::ICON_EXCLAMATION);
@@ -1087,3 +1277,20 @@ void runCommand(std::string strCommand)
         printf("runCommand error: system(%s) returned %d\n", strCommand.c_str(), nErr);
 }
 
+void RenameThread(const char* name)
+{
+#if defined(PR_SET_NAME)
+    // Only the first 15 characters are used (16 - NUL terminator)
+    ::prctl(PR_SET_NAME, name, 0, 0, 0);
+#elif 0 && (defined(__FreeBSD__) || defined(__OpenBSD__))
+    // TODO: This is currently disabled because it needs to be verified to work
+    //       on FreeBSD or OpenBSD first. When verified the '0 &&' part can be
+    //       removed.
+    pthread_set_name_np(pthread_self(), name);
+#elif defined(MAC_OSX)
+    pthread_setname_np(name);
+#else
+    // Prevent warnings for unused parameters...
+    (void)name;
+#endif
+}

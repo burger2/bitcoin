@@ -14,6 +14,7 @@
 #include <QScrollBar>
 
 #include <boost/tokenizer.hpp>
+#include <openssl/crypto.h>
 
 // TODO: make it possible to filter out categories (esp debug messages when implemented)
 // TODO: receive errors and debug messages through ClientModel
@@ -114,16 +115,13 @@ RPCConsole::RPCConsole(QWidget *parent) :
     ui->showCLOptionsButton->setIcon(QIcon(":/icons/options"));
 #endif
 
-#ifndef WIN32
-    // Hide Debug logfile label and Open button for non Windows-OSes
-    ui->labelDebugLogfile->setVisible(false);
-    ui->openDebugLogfileButton->setVisible(false);
-#endif
-
     // Install event filter for up and down arrow
     ui->lineEdit->installEventFilter(this);
 
     connect(ui->clearButton, SIGNAL(clicked()), this, SLOT(clear()));
+
+    // set OpenSSL version label
+    ui->openSSLVersion->setText(SSLeay_version(SSLEAY_VERSION));
 
     startExecutor();
 
