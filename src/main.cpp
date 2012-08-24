@@ -653,8 +653,7 @@ bool CTxMemPool::remove(CTransaction &tx)
     return true;
 }
 
-void
-CTxMemPool::clear()
+void CTxMemPool::clear()
 {
     LOCK(cs);
     mapTx.clear();
@@ -1826,6 +1825,28 @@ bool CBlock::AcceptBlock()
     if (!Checkpoints::CheckBlock(nHeight, hash))
         return DoS(100, error("AcceptBlock() : rejected by checkpoint lock-in at %d", nHeight));
 
+    // Reject block.nVersion=1 blocks when 95% (75% on testnet) of the network has upgraded:
+    if (nVersion < 2)
+    {
+        if ((!fTestNet && CBlockIndex::IsSuperMajority(2, pindexPrev, 950, 1000)) ||
+            (fTestNet && CBlockIndex::IsSuperMajority(2, pindexPrev, 75, 100)))
+        {
+            return error("AcceptBlock() : rejected nVersion=1 block");
+        }
+    }
+    // Enforce block.nVersion=2 rule that the coinbase starts with serialized block height
+    if (nVersion >= 2)
+    {
+        // if 750 of the last 1,000 blocks are version 2 or greater (51/100 if testnet):
+        if ((!fTestNet && CBlockIndex::IsSuperMajority(2, pindexPrev, 750, 1000)) ||
+            (fTestNet && CBlockIndex::IsSuperMajority(2, pindexPrev, 51, 100)))
+        {
+            CScript expect = CScript() << nHeight;
+            if (!std::equal(expect.begin(), expect.end(), vtx[0].vin[0].scriptSig.begin()))
+                return DoS(100, error("AcceptBlock() : block height mismatch in coinbase"));
+        }
+    }
+
     // Write block to history file
     if (!CheckDiskSpace(::GetSerializeSize(*this, SER_DISK, CLIENT_VERSION)))
         return error("AcceptBlock() : out of disk space");
@@ -1847,6 +1868,18 @@ bool CBlock::AcceptBlock()
     }
 
     return true;
+}
+
+bool CBlockIndex::IsSuperMajority(int minVersion, const CBlockIndex* pstart, unsigned int nRequired, unsigned int nToCheck)
+{
+    unsigned int nFound = 0;
+    for (unsigned int i = 0; i < nToCheck && nFound < nRequired && pstart != NULL; i++)
+    {
+        if (pstart->nVersion >= minVersion)
+            ++nFound;
+        pstart = pstart->pprev;
+    }
+    return (nFound >= nRequired);
 }
 
 bool ProcessBlock(CNode* pfrom, CBlock* pblock)
@@ -1886,17 +1919,20 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
     }
 
 
-    // If don't already have its previous block, shunt it off to holding area until we get it
+    // If we don't already have its previous block, shunt it off to holding area until we get it
     if (!mapBlockIndex.count(pblock->hashPrevBlock))
     {
         printf("ProcessBlock: ORPHAN BLOCK, prev=%s\n", pblock->hashPrevBlock.ToString().substr(0,20).c_str());
-        CBlock* pblock2 = new CBlock(*pblock);
-        mapOrphanBlocks.insert(make_pair(hash, pblock2));
-        mapOrphanBlocksByPrev.insert(make_pair(pblock2->hashPrevBlock, pblock2));
 
-        // Ask this guy to fill in what we're missing
-        if (pfrom)
+        // Accept orphans as long as there is a node to request its parents from
+        if (pfrom) {
+            CBlock* pblock2 = new CBlock(*pblock);
+            mapOrphanBlocks.insert(make_pair(hash, pblock2));
+            mapOrphanBlocksByPrev.insert(make_pair(pblock2->hashPrevBlock, pblock2));
+
+            // Ask this guy to fill in what we're missing
             pfrom->PushGetBlocks(pindexBest, GetOrphanRoot(pblock2));
+        }
         return true;
     }
 
@@ -2583,7 +2619,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
     {
         vector<CInv> vInv;
         vRecv >> vInv;
-        if (vInv.size() > 50000)
+        if (vInv.size() > MAX_INV_SZ)
         {
             pfrom->Misbehaving(20);
             return error("message inv size() = %d", vInv.size());
@@ -2634,7 +2670,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
     {
         vector<CInv> vInv;
         vRecv >> vInv;
-        if (vInv.size() > 50000)
+        if (vInv.size() > MAX_INV_SZ)
         {
             pfrom->Misbehaving(20);
             return error("message getdata size() = %d", vInv.size());
@@ -2676,11 +2712,24 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
             else if (inv.IsKnownType())
             {
                 // Send stream from relay memory
+                bool pushed = false;
                 {
                     LOCK(cs_mapRelay);
                     map<CInv, CDataStream>::iterator mi = mapRelay.find(inv);
-                    if (mi != mapRelay.end())
+                    if (mi != mapRelay.end()) {
                         pfrom->PushMessage(inv.GetCommand(), (*mi).second);
+                        pushed = true;
+                    }
+                }
+                if (!pushed && inv.type == MSG_TX) {
+                    LOCK(mempool.cs);
+                    if (mempool.exists(inv.hash)) {
+                        CTransaction tx = mempool.lookup(inv.hash);
+                        CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+                        ss.reserve(1000);
+                        ss << tx;
+                        pfrom->PushMessage("tx", ss);
+                    }
                 }
             }
 
@@ -2852,6 +2901,22 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
         vector<CAddress> vAddr = addrman.GetAddr();
         BOOST_FOREACH(const CAddress &addr, vAddr)
             pfrom->PushAddress(addr);
+    }
+
+
+    else if (strCommand == "mempool")
+    {
+        std::vector<uint256> vtxid;
+        mempool.queryHashes(vtxid);
+        vector<CInv> vInv;
+        for (unsigned int i = 0; i < vtxid.size(); i++) {
+            CInv inv(MSG_TX, vtxid[i]);
+            vInv.push_back(inv);
+            if (i == (MAX_INV_SZ - 1))
+                    break;
+        }
+        if (vInv.size() > 0)
+            pfrom->PushMessage("inv", vInv);
     }
 
 
@@ -3634,7 +3699,8 @@ void IncrementExtraNonce(CBlock* pblock, CBlockIndex* pindexPrev, unsigned int& 
         hashPrevBlock = pblock->hashPrevBlock;
     }
     ++nExtraNonce;
-    pblock->vtx[0].vin[0].scriptSig = (CScript() << pblock->nTime << CBigNum(nExtraNonce)) + COINBASE_FLAGS;
+    unsigned int nHeight = pindexPrev->nHeight+1; // Height first in coinbase required for block.version=2
+    pblock->vtx[0].vin[0].scriptSig = (CScript() << nHeight << CBigNum(nExtraNonce)) + COINBASE_FLAGS;
     assert(pblock->vtx[0].vin[0].scriptSig.size() <= 100);
 
     pblock->hashMerkleRoot = pblock->BuildMerkleTree();
