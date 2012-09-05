@@ -12,9 +12,9 @@
 
 // These need to be macros, as version.cpp's voodoo requires it
 #define CLIENT_VERSION_MAJOR       0
-#define CLIENT_VERSION_MINOR       6
-#define CLIENT_VERSION_REVISION   99
-#define CLIENT_VERSION_BUILD       0
+#define CLIENT_VERSION_MINOR       7
+#define CLIENT_VERSION_REVISION    0
+#define CLIENT_VERSION_BUILD       2
 
 static const int CLIENT_VERSION =
                            1000000 * CLIENT_VERSION_MAJOR
